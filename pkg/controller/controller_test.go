@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -27,9 +26,6 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/mock/gomock"
@@ -403,7 +399,7 @@ func TestCreateDriverReturnsInvalidCapacityDuringProvision(t *testing.T) {
 
 	pluginCaps, controllerCaps := provisionCapabilities()
 	csiProvisioner := NewCSIProvisioner(nil, 5*time.Second, "test-provisioner", "test",
-		5, csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), nil, nil, nil)
+		5,true, csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), nil, nil, nil)
 
 	// Requested PVC with requestedBytes storage
 	deletePolicy := v1.PersistentVolumeReclaimDelete
@@ -804,7 +800,7 @@ func TestProvision(t *testing.T) {
 				StorageClass: &storagev1.StorageClass{
 					ReclaimPolicy: &deletePolicy,
 					Parameters: map[string]string{
-						"fstype": "ext3",
+						"csi.storage.k8s.io/fstype": "ext3",
 					},
 				},
 				PVName: "test-name",
@@ -826,567 +822,6 @@ func TestProvision(t *testing.T) {
 				},
 			},
 			expectState: controller.ProvisioningFinished,
-		},
-		"multiple fsType provision": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters: map[string]string{
-						"fstype":          "ext3",
-						prefixedFsTypeKey: "ext4",
-					},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			expectErr:   true,
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with prefixed FS Type key": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters: map[string]string{
-						prefixedFsTypeKey: "ext3",
-					},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext3",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.Parameters) != 0 {
-					t.Errorf("Parameters should have been stripped")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with access mode multi node multi writer": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteMany},
-					},
-				},
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				AccessModes:   []v1.PersistentVolumeAccessMode{v1.ReadWriteMany},
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.GetVolumeCapabilities()) != 1 {
-					t.Errorf("Incorrect length in volume capabilities")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER {
-					t.Errorf("Expected multi_node_multi_writer")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with access mode multi node multi readonly": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany},
-					},
-				},
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				AccessModes:   []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany},
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.GetVolumeCapabilities()) != 1 {
-					t.Errorf("Incorrect length in volume capabilities")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
-					t.Errorf("Expected multi_node_reader_only")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with access mode single writer": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-					},
-				},
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				AccessModes:   []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.GetVolumeCapabilities()) != 1 {
-					t.Errorf("Incorrect length in volume capabilities")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER {
-					t.Errorf("Expected single_node_writer")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with multiple access modes": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany, v1.ReadWriteOnce},
-					},
-				},
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				AccessModes:   []v1.PersistentVolumeAccessMode{v1.ReadOnlyMany, v1.ReadWriteOnce},
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.GetVolumeCapabilities()) != 2 {
-					t.Errorf("Incorrect length in volume capabilities")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if req.GetVolumeCapabilities()[0].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
-					t.Errorf("Expected multi reade only")
-				}
-				if req.GetVolumeCapabilities()[1].GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if req.GetVolumeCapabilities()[1].GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER {
-					t.Errorf("Expected single_node_writer")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with secrets": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			withSecretRefs: true,
-			expectedPVSpec: &pvSpec{
-				Name: "test-testi",
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-					ControllerPublishSecretRef: &v1.SecretReference{
-						Name:      "ctrlpublishsecret",
-						Namespace: "default",
-					},
-					NodeStageSecretRef: &v1.SecretReference{
-						Name:      "nodestagesecret",
-						Namespace: "default",
-					},
-					NodePublishSecretRef: &v1.SecretReference{
-						Name:      "nodepublishsecret",
-						Namespace: "default",
-					},
-					ControllerExpandSecretRef: &v1.SecretReference{
-						Name:      "controllerexpandsecret",
-						Namespace: "default",
-					},
-				},
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with volume mode(Filesystem)": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVCWithVolumeMode(requestedBytes, volumeModeFileSystem),
-			},
-			expectedPVSpec: &pvSpec{
-				Name: "test-testi",
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				VolumeMode:    &volumeModeFileSystem,
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with volume mode(Block)": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					ReclaimPolicy: &deletePolicy,
-					Parameters:    map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVCWithVolumeMode(requestedBytes, volumeModeBlock),
-			},
-			expectedPVSpec: &pvSpec{
-				Name: "test-testi",
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				VolumeMode:    &volumeModeBlock,
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"fail to get secret reference": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters: map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			getSecretRefErr: true,
-			expectErr:       true,
-			expectState:     controller.ProvisioningNoChange,
-		},
-		"fail not nil selector": {
-			volOpts: controller.ProvisionOptions{
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			notNilSelector: true,
-			expectErr:      true,
-			expectState:    controller.ProvisioningFinished,
-		},
-		"fail to make volume name": {
-			volOpts: controller.ProvisionOptions{
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			makeVolumeNameErr: true,
-			expectErr:         true,
-			expectState:       controller.ProvisioningFinished,
-		},
-		"fail to get credentials": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters: map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			getCredentialsErr: true,
-			expectErr:         true,
-			expectState:       controller.ProvisioningNoChange,
-		},
-		"fail vol with less capacity": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters: map[string]string{},
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			volWithLessCap: true,
-			expectErr:      true,
-			expectState:    controller.ProvisioningInBackground,
-		},
-		"provision with mount options": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters:    map[string]string{},
-					MountOptions:  []string{"foo=bar", "baz=qux"},
-					ReclaimPolicy: &deletePolicy,
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-					},
-				},
-			},
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				AccessModes:   []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-				MountOptions:  []string{"foo=bar", "baz=qux"},
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext4",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				if len(req.GetVolumeCapabilities()) != 1 {
-					t.Errorf("Incorrect length in volume capabilities")
-				}
-				cap := req.GetVolumeCapabilities()[0]
-				if cap.GetAccessMode() == nil {
-					t.Errorf("Expected access mode to be set")
-				}
-				if cap.GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER {
-					t.Errorf("Expected multi reade only")
-				}
-				if cap.GetMount() == nil {
-					t.Errorf("Expected access type to be mount")
-				}
-				if !reflect.DeepEqual(cap.GetMount().MountFlags, []string{"foo=bar", "baz=qux"}) {
-					t.Errorf("Expected 2 mount options")
-				}
-			},
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with final error": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters:    map[string]string{},
-					ReclaimPolicy: &deletePolicy,
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-					},
-				},
-			},
-			createVolumeError: status.Error(codes.Unauthenticated, "Mock final error"),
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				// intentionally empty
-			},
-			expectErr:   true,
-			expectState: controller.ProvisioningFinished,
-		},
-		"provision with transient error": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters:    map[string]string{},
-					ReclaimPolicy: &deletePolicy,
-				},
-				PVName: "test-name",
-				PVC: &v1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{
-						UID:         "testid",
-						Annotations: driverNameAnnotation,
-					},
-					Spec: v1.PersistentVolumeClaimSpec{
-						Selector: nil,
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceName(v1.ResourceStorage): resource.MustParse(strconv.FormatInt(requestedBytes, 10)),
-							},
-						},
-						AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
-					},
-				},
-			},
-			createVolumeError: status.Error(codes.DeadlineExceeded, "Mock timeout"),
-			expectCreateVolDo: func(ctx context.Context, req *csi.CreateVolumeRequest) {
-				// intentionally empty
-			},
-			expectErr:   true,
-			expectState: controller.ProvisioningInBackground,
-		},
-		"provision with size 0": {
-			volOpts: controller.ProvisionOptions{
-				StorageClass: &storagev1.StorageClass{
-					Parameters: map[string]string{
-						"fstype": "ext3",
-					},
-					ReclaimPolicy: &deletePolicy,
-				},
-				PVName: "test-name",
-				PVC:    createFakePVC(requestedBytes),
-			},
-			volWithZeroCap: true,
-			expectedPVSpec: &pvSpec{
-				Name:          "test-testi",
-				ReclaimPolicy: v1.PersistentVolumeReclaimDelete,
-				Capacity: v1.ResourceList{
-					v1.ResourceName(v1.ResourceStorage): bytesToGiQuantity(requestedBytes),
-				},
-				CSIPVS: &v1.CSIPersistentVolumeSource{
-					Driver:       "test-driver",
-					VolumeHandle: "test-volume-id",
-					FSType:       "ext3",
-					VolumeAttributes: map[string]string{
-						"storage.kubernetes.io/csiProvisionerIdentity": "test-provisioner",
-					},
-				},
-			},
 		},
 	}
 
@@ -1464,7 +899,7 @@ func runProvisionTest(t *testing.T, k string, tc provisioningTestcase, requested
 	}
 
 	pluginCaps, controllerCaps := provisionCapabilities()
-	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5, csiConn.conn,
+	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true, csiConn.conn,
 		nil, provisionDriverName, pluginCaps, controllerCaps, supportsMigrationFromInTreePluginName, false, csitrans.New(), nil, nil, nil)
 
 	out := &csi.CreateVolumeResponse{
@@ -2211,7 +1646,7 @@ func TestProvisionFromSnapshot(t *testing.T) {
 		})
 
 		pluginCaps, controllerCaps := provisionFromSnapshotCapabilities()
-		csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5, csiConn.conn,
+		csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true, csiConn.conn,
 			client, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), nil, nil, nil)
 
 		out := &csi.CreateVolumeResponse{
@@ -2385,7 +1820,7 @@ func TestProvisionWithTopologyEnabled(t *testing.T) {
 			scLister, csiNodeLister, nodeLister, stopChan := listers(clientSet)
 			defer close(stopChan)
 
-			csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,
+			csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true,
 				csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), scLister, csiNodeLister, nodeLister)
 
 			pv, err := csiProvisioner.Provision(controller.ProvisionOptions{
@@ -2440,7 +1875,7 @@ func TestProvisionWithTopologyDisabled(t *testing.T) {
 
 	clientSet := fakeclientset.NewSimpleClientset()
 	pluginCaps, controllerCaps := provisionWithTopologyCapabilities()
-	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,
+	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true,
 		csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), nil, nil, nil)
 
 	out := &csi.CreateVolumeResponse{
@@ -2612,7 +2047,7 @@ func runDeleteTest(t *testing.T, k string, tc deleteTestcase) {
 
 	pluginCaps, controllerCaps := provisionCapabilities()
 	scLister, _, _, _ := listers(clientSet)
-	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,
+	csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true,
 		csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), scLister, nil, nil)
 
 	err = csiProvisioner.Delete(tc.persistentVolume)
@@ -3314,7 +2749,7 @@ func TestProvisionFromPVC(t *testing.T) {
 			controllerServer.EXPECT().CreateVolume(gomock.Any(), gomock.Any()).Return(nil, errors.New("source volume size is bigger than requested volume size")).Times(1)
 		}
 
-		csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5, csiConn.conn,
+		csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner", "test", 5,true, csiConn.conn,
 			nil, driverName, pluginCaps, controllerCaps, "", false, csitrans.New(), nil, nil, nil)
 
 		pv, err := csiProvisioner.Provision(tc.volOpts)
@@ -3393,7 +2828,7 @@ func TestProvisionWithMigration(t *testing.T) {
 			clientSet := fakeclientset.NewSimpleClientset()
 			pluginCaps, controllerCaps := provisionCapabilities()
 			csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner",
-				"test", 5, csiConn.conn, nil, driverName, pluginCaps, controllerCaps,
+				"test", 5, true,csiConn.conn, nil, driverName, pluginCaps, controllerCaps,
 				inTreePluginName, false, mockTranslator, nil, nil, nil)
 
 			// Set up return values (AnyTimes to avoid overfitting on implementation)
@@ -3553,7 +2988,7 @@ func TestDeleteMigration(t *testing.T) {
 			clientSet := fakeclientset.NewSimpleClientset()
 			pluginCaps, controllerCaps := provisionCapabilities()
 			csiProvisioner := NewCSIProvisioner(clientSet, 5*time.Second, "test-provisioner",
-				"test", 5, csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "",
+				"test", 5,true, csiConn.conn, nil, driverName, pluginCaps, controllerCaps, "",
 				false, mockTranslator, nil, nil, nil)
 
 			// Set mock return values (AnyTimes to avoid overfitting on implementation details)

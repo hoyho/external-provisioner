@@ -57,6 +57,7 @@ var (
 	_                    = deprecatedflags.Add("connection-timeout")
 	volumeNamePrefix     = flag.String("volume-name-prefix", "pvc", "Prefix to apply to the name of a created volume.")
 	volumeNameUUIDLength = flag.Int("volume-name-uuid-length", -1, "Truncates generated UUID of a created volume to this length. Defaults behavior is to NOT truncate.")
+	includeClaimMeta = flag.Bool("include-pvc-meta", false, "Whether to pass pvc meta data when provisioning volume. Default value is false")
 	showVersion          = flag.Bool("version", false, "Show version.")
 	retryIntervalStart   = flag.Duration("retry-interval-start", time.Second, "Initial retry interval of failed provisioning or deletion. It doubles with each failure, up to retry-interval-max.")
 	retryIntervalMax     = flag.Duration("retry-interval-max", 5*time.Minute, "Maximum retry interval of failed provisioning or deletion.")
@@ -211,6 +212,7 @@ func main() {
 		identity,
 		*volumeNamePrefix,
 		*volumeNameUUIDLength,
+		*includeClaimMeta,
 		grpcClient,
 		snapClient,
 		provisionerName,

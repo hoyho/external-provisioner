@@ -101,6 +101,10 @@ const (
 	nodePublishSecretNameKey      = "csiNodePublishSecretName"
 	nodePublishSecretNamespaceKey = "csiNodePublishSecretNamespace"
 
+	pvMetaNameKey         = "kubernetes.io/pv-name"
+	pvcMetaNameKey        = "kubernetes.io/pvc-name"
+	pvcNamespaceKey       = "kubernetes.io/pvc-namespace"
+
 	// Defines parameters for ExponentialBackoff used for executing
 	// CSI CreateVolume API call, it gives approx 4 minutes for the CSI
 	// driver to complete a volume creation.
@@ -195,6 +199,7 @@ type csiProvisioner struct {
 	identity                              string
 	volumeNamePrefix                      string
 	volumeNameUUIDLength                  int
+	includeClaimMeta                      bool
 	config                                *rest.Config
 	driverName                            string
 	pluginCapabilities                    rpc.PluginCapabilitySet
@@ -257,6 +262,7 @@ func NewCSIProvisioner(client kubernetes.Interface,
 	identity string,
 	volumeNamePrefix string,
 	volumeNameUUIDLength int,
+	includeClaimMeta  bool,
 	grpcClient *grpc.ClientConn,
 	snapshotClient snapclientset.Interface,
 	driverName string,
@@ -279,6 +285,7 @@ func NewCSIProvisioner(client kubernetes.Interface,
 		identity:                              identity,
 		volumeNamePrefix:                      volumeNamePrefix,
 		volumeNameUUIDLength:                  volumeNameUUIDLength,
+		includeClaimMeta:     includeClaimMeta,
 		driverName:                            driverName,
 		pluginCapabilities:                    pluginCapabilities,
 		controllerCapabilities:                controllerCapabilities,
@@ -560,6 +567,12 @@ func (p *csiProvisioner) ProvisionExt(options controller.ProvisionOptions) (*v1.
 	controllerExpandSecretRef, err := getSecretReference(controllerExpandSecretParams, options.StorageClass.Parameters, pvName, options.PVC)
 	if err != nil {
 		return nil, controller.ProvisioningNoChange, err
+	}
+
+	if p.includeClaimMeta {
+		options.StorageClass.Parameters[pvMetaNameKey] = pvName
+		options.StorageClass.Parameters[pvcMetaNameKey] = options.PVC.Name
+		options.StorageClass.Parameters[pvcNamespaceKey] = options.PVC.Namespace
 	}
 
 	req.Parameters, err = removePrefixedParameters(options.StorageClass.Parameters)
